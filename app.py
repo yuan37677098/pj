@@ -1,204 +1,160 @@
 import streamlit as st
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 import requests
 import json
-import plotly.express as px
+from openai import OpenAI
 
-# 设置页面标题
 st.set_page_config(page_title="数据分析Agent", layout="wide")
-
-# 页面标题
 st.title("📊 数据分析Agent")
 
-# 侧边栏 - 文件上传
-st.sidebar.header("文件上传")
-uploaded_file = st.sidebar.file_uploader("上传Excel或CSV文件", type=["xlsx", "csv"])
-
-# 存储API密钥
-if "api_key" not in st.session_state:
+# 初始化 session_state
+if 'df' not in st.session_state:
+    st.session_state.df = None
+if 'api_key' not in st.session_state:
     st.session_state.api_key = ""
 
-# 智谱AI API密钥输入
-st.sidebar.header("API配置")
-st.session_state.api_key = st.sidebar.text_input("输入智谱AI API密钥", value=st.session_state.api_key, type="password")
+# 侧边栏：文件上传 + API配置
+with st.sidebar:
+    st.header("文件上传")
+    uploaded_file = st.file_uploader("上传 Excel 或 CSV 文件", type=["xlsx", "csv"])
+    
+    st.header("API 配置")
+    api_key_input = st.text_input("DeepSeek API Key", type="password", 
+                                  placeholder="输入你的 DeepSeek API Key")
+    if api_key_input:
+        st.session_state.api_key = api_key_input
+    
+    st.markdown("---")
+    st.markdown("**提示**：上传数据后，可以手动选择图表坐标轴，并自定义度量值。")
 
-# 数据存储
-if "df" not in st.session_state:
-    st.session_state.df = None
-
-if "analysis_result" not in st.session_state:
-    st.session_state.analysis_result = None
-
-if "charts" not in st.session_state:
-    st.session_state.charts = []
-
-# 处理上传的文件
+# 读取文件
 if uploaded_file is not None:
     try:
-        # 读取文件
         if uploaded_file.name.endswith('.csv'):
-            st.session_state.df = pd.read_csv(uploaded_file)
+            df = pd.read_csv(uploaded_file)
         else:
-            st.session_state.df = pd.read_excel(uploaded_file)
-        
-        # 显示数据预览
-        st.subheader("数据预览")
-        st.dataframe(st.session_state.df.head(10))
-        
-        # 显示数据基本信息
-        st.subheader("数据信息")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write(f"行数: {st.session_state.df.shape[0]}")
-            st.write(f"列数: {st.session_state.df.shape[1]}")
-        with col2:
-            st.write("列名:")
-            st.write(list(st.session_state.df.columns))
+            df = pd.read_excel(uploaded_file)
+        st.session_state.df = df
+        st.success("文件加载成功！")
     except Exception as e:
-        st.error(f"文件读取失败: {str(e)}")
-# 智谱AI API调用函数
-def call_chatglm_api(prompt, api_key):
-    url = "https://open.bigmodel.cn/api/messages"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-    data = {
-        "model": "glm-4-flash",
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        "temperature": 0.7
-    }
-    try:
-        response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
-        result = response.json()
-        return result.get("data", {}).get("messages", [{}])[0].get("content", "")
-    except Exception as e:
-        st.error(f"API调用失败: {str(e)}")
-        return ""
+        st.error(f"文件读取失败: {e}")
+        st.stop()
 
-# 开始AI分析按钮
-if st.sidebar.button("开始AI分析") and st.session_state.df is not None and st.session_state.api_key:
-    with st.sidebar.spinner("正在分析数据..."):
-        # 准备数据摘要
-        data_summary = f"""数据摘要:
-- 数据集形状: {st.session_state.df.shape[0]}行 x {st.session_state.df.shape[1]}列
-- 列名: {list(st.session_state.df.columns)}
-- 数据类型:
-{st.session_state.df.dtypes.to_string()}
-- 基本统计信息:
-{st.session_state.df.describe().to_string()}
-"""
+# 如果有数据，显示交互界面
+if st.session_state.df is not None:
+    df = st.session_state.df
+    
+    # 数据预览
+    st.subheader("数据预览")
+    st.dataframe(df.head(10))
+    
+    # 显示基本信息
+    st.subheader("数据信息")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write(f"行数: {df.shape[0]}")
+        st.write(f"列数: {df.shape[1]}")
+    with col2:
+        st.write("列名:")
+        st.write(list(df.columns))
+    
+    # ---------- 自定义度量值 ----------
+    st.subheader("自定义度量值")
+    st.markdown("你可以输入一个 Python 表达式来创建新列，例如：`revenue - cost_goods`")
+    col_expr, col_new = st.columns([3,1])
+    with col_expr:
+        expr = st.text_input("表达式（使用已有列名）", key="expr_input")
+    with col_new:
+        new_col_name = st.text_input("新列名", key="new_col_name")
+    
+    if st.button("创建度量值"):
+        if expr and new_col_name:
+            try:
+                # 安全执行表达式（只允许基本运算，禁用危险函数）
+                allowed_names = {col: df[col] for col in df.columns}
+                allowed_names.update({"pd": pd, "np": __import__("numpy")})
+                # 使用 eval 但限制全局和局部变量
+                result = eval(expr, {"__builtins__": {}}, allowed_names)
+                df[new_col_name] = result
+                st.session_state.df = df
+                st.success(f"已创建列 '{new_col_name}'")
+                st.dataframe(df[[new_col_name]].head())
+            except Exception as e:
+                st.error(f"表达式错误: {e}")
+        else:
+            st.warning("请输入表达式和新列名")
+    
+    # ---------- 交互式图表 ----------
+    st.subheader("交互式图表")
+    # 获取所有列名，区分数值列和日期列
+    all_cols = list(df.columns)
+    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+    date_cols = [col for col in all_cols if 'date' in col.lower() or '时间' in col or '日期' in col]
+    
+    # 如果没有日期列，用索引
+    x_options = date_cols if date_cols else ['index']
+    y_options = numeric_cols if numeric_cols else all_cols
+    
+    x_axis = st.selectbox("选择 X 轴（通常为日期）", x_options)
+    y_axis = st.selectbox("选择 Y 轴（数值）", y_options)
+    
+    if st.button("生成图表"):
+        if x_axis == 'index':
+            x_data = df.index
+            x_label = "行索引"
+        else:
+            x_data = df[x_axis]
+            x_label = x_axis
+            # 如果是日期列，尝试转换为 datetime
+            if x_axis in date_cols:
+                x_data = pd.to_datetime(x_data, errors='coerce')
         
-        # 生成分析报告的提示词
-        analysis_prompt = f"""请分析以下数据集并生成一份详细的分析报告，包括：
-1. 数据概览
-2. 关键指标和统计信息
-3. 数据洞察和发现
-4. 可能的业务价值
+        if y_axis not in numeric_cols:
+            st.warning("Y 轴必须是数值列")
+        else:
+            fig, ax = plt.subplots(figsize=(10,5))
+            ax.plot(x_data, df[y_axis], marker='o', linestyle='-')
+            ax.set_xlabel(x_label)
+            ax.set_ylabel(y_axis)
+            ax.set_title(f"{y_axis} 随时间变化")
+            plt.xticks(rotation=45)
+            st.pyplot(fig)
+    
+    # ---------- 智能问答（使用 DeepSeek API）----------
+    st.subheader("智能问答")
+    user_question = st.text_area("输入你想问的问题", 
+                                 placeholder="例如：哪个产品的销量最高？总利润是多少？")
+    if st.button("提交问题"):
+        if not st.session_state.api_key:
+            st.error("请先在侧边栏输入 DeepSeek API Key")
+        elif not user_question:
+            st.warning("请输入问题")
+        else:
+            # 准备数据摘要（避免超长）
+            sample = df.head(20).to_string()
+            col_info = ", ".join(df.columns)
+            prompt = f"""
+            用户问题：{user_question}
+            数据列名：{col_info}
+            数据样例（前20行）：
+            {sample}
+            请基于数据回答用户问题，给出具体数值和分析建议。
+            """
+            client = OpenAI(api_key=st.session_state.api_key, 
+                            base_url="https://api.deepseek.com/v1")
+            try:
+                with st.spinner("AI 思考中..."):
+                    response = client.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.3
+                    )
+                    answer = response.choices[0].message.content
+                    st.success(answer)
+            except Exception as e:
+                st.error(f"调用失败：{e}")
 
-数据摘要：
-{data_summary}
-
-请用中文回答，输出格式清晰易读。"""
-        
-        # 调用API生成分析报告
-        st.session_state.analysis_result = call_chatglm_api(analysis_prompt, st.session_state.api_key)
-        
-        # 生成可视化建议的提示词
-        viz_prompt = f"""基于以下数据集，推荐2-3个最合适的可视化图表类型，并说明推荐理由。
-
-数据摘要：
-{data_summary}
-
-请只返回图表类型和简短理由，不要有其他内容。"""
-        
-        # 调用API获取可视化建议
-        viz_suggestions = call_chatglm_api(viz_prompt, st.session_state.api_key)
-        
-        # 生成图表
-        st.session_state.charts = []
-        
-        # 尝试生成柱状图
-        try:
-            # 选择数值列
-            numeric_cols = st.session_state.df.select_dtypes(include=['int64', 'float64']).columns
-            if len(numeric_cols) > 0:
-                # 选择第一个数值列
-                value_col = numeric_cols[0]
-                # 如果有分类列，使用分类列作为x轴
-                categorical_cols = st.session_state.df.select_dtypes(include=['object', 'category']).columns
-                if len(categorical_cols) > 0:
-                    x_col = categorical_cols[0]
-                    fig1 = px.bar(st.session_state.df, x=x_col, y=value_col, title=f"{x_col} vs {value_col}")
-                    st.session_state.charts.append(fig1)
-        except Exception as e:
-            pass
-        
-        # 尝试生成折线图
-        try:
-            # 检查是否有日期列或时序数据
-            date_cols = [col for col in st.session_state.df.columns if 'date' in col.lower() or 'time' in col.lower()]
-            if len(date_cols) > 0:
-                date_col = date_cols[0]
-                # 选择数值列
-                numeric_cols = st.session_state.df.select_dtypes(include=['int64', 'float64']).columns
-                if len(numeric_cols) > 0:
-                    value_col = numeric_cols[0]
-                    fig2 = px.line(st.session_state.df, x=date_col, y=value_col, title=f"{value_col} 随时间变化")
-                    st.session_state.charts.append(fig2)
-        except Exception as e:
-            pass
-        
-        # 尝试生成散点图
-        try:
-            # 选择两个数值列
-            numeric_cols = st.session_state.df.select_dtypes(include=['int64', 'float64']).columns
-            if len(numeric_cols) >= 2:
-                fig3 = px.scatter(st.session_state.df, x=numeric_cols[0], y=numeric_cols[1], 
-                                 title=f"{numeric_cols[0]} vs {numeric_cols[1]}")
-                st.session_state.charts.append(fig3)
-        except Exception as e:
-            pass
-
-# 显示分析报告
-if st.session_state.analysis_result:
-    st.sidebar.header("分析报告")
-    st.sidebar.write(st.session_state.analysis_result)
-
-# 显示可视化图表
-if st.session_state.charts:
-    st.subheader("数据可视化")
-    for i, fig in enumerate(st.session_state.charts):
-        st.plotly_chart(fig, use_container_width=True)
-
-# 智能问答功能
-st.subheader("智能问答")
-user_question = st.text_input("请输入您的问题：")
-if user_question and st.session_state.df is not None and st.session_state.api_key:
-    with st.spinner("AI正在思考..."):
-        # 准备问答提示词
-        qna_prompt = f"""请基于以下数据集回答用户问题：
-
-数据集信息：
-{st.session_state.df.head().to_string()}
-
-用户问题：{user_question}
-
-请用中文回答，基于数据内容给出准确的答案。"""
-        
-        # 调用API获取回答
-        answer = call_chatglm_api(qna_prompt, st.session_state.api_key)
-        
-        # 显示回答
-        st.write("AI回答：")
-        st.write(answer)
-
-# 部署指南链接
-st.sidebar.header("部署指南")
-st.sidebar.markdown("[点击查看详细部署指南](https://docs.streamlit.io/streamlit-community-cloud/deploy-your-app)")
+else:
+    st.info("请先在侧边栏上传 Excel 或 CSV 文件")
