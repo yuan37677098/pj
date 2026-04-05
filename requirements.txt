@@ -1,8 +1,4 @@
 streamlit
 pandas
-matplotlib
-seaborn
-openai
-requests
-numpy
 plotly
+openai
