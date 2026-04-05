@@ -54,10 +54,8 @@ if uploaded_file is not None:
         with col2:
             st.write("列名:")
             st.write(list(st.session_state.df.columns))
-            
-except Exception as e:
+    except Exception as e:
         st.error(f"文件读取失败: {str(e)}")
-
 # 智谱AI API调用函数
 def call_chatglm_api(prompt, api_key):
     url = "https://open.bigmodel.cn/api/messages"
